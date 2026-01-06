@@ -1,4 +1,63 @@
+import { execSync } from "node:child_process";
 import { getPortalUrl } from "./config.js";
+
+/**
+ * Execute HTTP request using curl as fallback
+ */
+function curlRequest(
+  url: string,
+  method: string,
+  headers: Record<string, string>,
+  body?: string
+): string {
+  const headerArgs = Object.entries(headers)
+    .map(([k, v]) => `-H "${k}: ${v}"`)
+    .join(" ");
+
+  const bodyArg = body ? `-d '${body.replace(/'/g, "'\\''")}'` : "";
+
+  const cmd = `curl -s -X ${method} "${url}" ${headerArgs} ${bodyArg}`;
+  return execSync(cmd, { encoding: "utf-8" });
+}
+
+/**
+ * Retry a fetch request with exponential backoff, falling back to curl
+ */
+async function fetchWithRetry(
+  url: string,
+  options: RequestInit,
+  maxRetries = 3
+): Promise<Response> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fetch(url, options);
+    } catch (error) {
+      lastError = error as Error;
+      if (attempt < maxRetries) {
+        // Exponential backoff: 1s, 2s, 4s
+        await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, attempt)));
+      }
+    }
+  }
+
+  // Fall back to curl if all fetch attempts fail
+  try {
+    const headers: Record<string, string> = {};
+    if (options.headers) {
+      const h = options.headers as Record<string, string>;
+      for (const [k, v] of Object.entries(h)) {
+        headers[k] = v;
+      }
+    }
+    const body = options.body as string | undefined;
+    const result = curlRequest(url, options.method || "GET", headers, body);
+    return new Response(result, { status: 200 });
+  } catch {
+    throw lastError;
+  }
+}
 
 export interface Project {
   id: string;
@@ -51,7 +110,7 @@ export class ChuckyApi {
       Authorization: `Bearer ${this.apiKey}`,
     };
 
-    const response = await fetch(url, {
+    const response = await fetchWithRetry(url, {
       method,
       headers,
       body: body ? JSON.stringify(body) : undefined,
@@ -70,7 +129,7 @@ export class ChuckyApi {
    * Validate API key
    */
   async validateApiKey(): Promise<ValidationResult> {
-    const response = await fetch(`${this.baseUrl}/api/validate-api-key`, {
+    const response = await fetchWithRetry(`${this.baseUrl}/api/validate-api-key`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ api_key: this.apiKey }),
