@@ -8,13 +8,14 @@ import { deployCommand } from "./commands/deploy.js";
 import { keysCommand } from "./commands/keys.js";
 import { configAnthropicCommand } from "./commands/config.js";
 import { deleteCommand } from "./commands/delete.js";
+import { promptCommand } from "./commands/prompt.js";
 
 const program = new Command();
 
 program
   .name("chucky")
   .description("CLI for deploying workspaces to Chucky cloud")
-  .version("0.1.0");
+  .version("0.2.4");
 
 // Login command
 program
@@ -66,6 +67,29 @@ program
   .command("delete [projectId]")
   .description("Delete a project")
   .action(deleteCommand);
+
+// Prompt command
+program
+  .command("prompt [prompt]")
+  .description("Send a prompt to a Chucky project")
+  .option("--project <name|id>", "Project to run against")
+  .option("--token <jwt>", "Use a pre-generated JWT token")
+  .option("--output-format <format>", "Output format: text, json, stream-json", "text")
+  .option("--json-schema <schema>", "JSON Schema for structured output")
+  .option("--model <model>", "Model: sonnet, opus, haiku, or full name")
+  .option("--system-prompt <prompt>", 'System prompt (string or JSON: {"type":"preset","preset":"claude_code"})')
+  .option("--tools <tools>", 'Tools config (JSON: {"type":"preset","preset":"claude_code"} or comma-separated names)')
+  .option("--allowed-tools <tools>", "Comma-separated list of allowed tools")
+  .option("--disallowed-tools <tools>", "Comma-separated list of disallowed tools")
+  .option("--permission-mode <mode>", "Permission mode (bypassPermissions, default, etc.)")
+  .option("--dangerously-skip-permissions", "Bypass all permission checks")
+  .option("--max-turns <n>", "Maximum conversation turns", parseInt)
+  .option("--max-budget-usd <amount>", "Maximum spend limit", parseFloat)
+  .option("--mcp-config <json>", "MCP servers configuration (JSON)")
+  .option("--agents <json>", "Custom agents definition (JSON)")
+  .option("--betas <betas>", "Beta headers (comma-separated)")
+  .option("--allow-possession", "Enable host tools - Claude can execute commands on your machine")
+  .action(promptCommand);
 
 // Parse arguments
 program.parse();
