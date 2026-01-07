@@ -1,7 +1,7 @@
 {
   "name": "@chucky.cloud/cli",
   "version": "0.1.12",
-  "description": "CLI for deploying workspaces to Chucky cloud",
+  "description": "CLI for deploying AI agent workspaces to Chucky cloud - build and ship Claude-powered assistants",
   "type": "module",
   "bin": {
     "chucky": "dist/index.js"
@@ -15,12 +15,29 @@
   "keywords": [
     "chucky",
     "claude",
+    "anthropic",
+    "ai",
     "agent",
     "deploy",
-    "cli"
+    "cli",
+    "assistant",
+    "llm",
+    "mcp",
+    "workspace",
+    "cloud",
+    "ai-assistant",
+    "deployment"
   ],
-  "author": "",
+  "author": "Chucky Cloud",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Chucky-Cloud/chucky-cli.git"
+  },
+  "homepage": "https://github.com/Chucky-Cloud/chucky-cli#readme",
+  "bugs": {
+    "url": "https://github.com/Chucky-Cloud/chucky-cli/issues"
+  },
   "dependencies": {
     "archiver": "^7.0.1",
     "chalk": "^5.3.0",
