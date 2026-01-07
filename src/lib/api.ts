@@ -17,7 +17,7 @@ export interface CreateProjectResult {
 export interface UploadUrlInfo {
   presignedUrl: string;
   key: string;
-  projectUuid: string;
+  projectId: string;
 }
 
 export interface ValidationResult {
@@ -145,8 +145,8 @@ export class ChuckyApi {
    */
   async markWorkspaceUploaded(
     projectId: string
-  ): Promise<{ success: boolean; hasWorkspace: boolean; projectUuid: string }> {
-    return this.request<{ success: boolean; hasWorkspace: boolean; projectUuid: string }>(
+  ): Promise<{ success: boolean; hasWorkspace: boolean; projectId: string }> {
+    return this.request<{ success: boolean; hasWorkspace: boolean; projectId: string }>(
       "POST",
       "/api/projects/workspace-uploaded",
       { projectId }

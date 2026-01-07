@@ -139,13 +139,13 @@ export async function deployCommand(options: { folder?: string }): Promise<void>
     }
 
     console.log(chalk.bold.green("\nDeployment successful!"));
-    console.log(chalk.dim(`\nProject UUID: ${result.projectUuid}`));
+    console.log(chalk.dim(`\nProject ID: ${result.projectId}`));
     console.log(chalk.dim(`Workspace: ${uploadInfo.key}`));
 
     // Get HMAC key for example curl command
     try {
       const hmacInfo = await api.getHmacKey(projectConfig.projectId);
-      printExampleCurlCommand(result.projectUuid, hmacInfo.hmacKey, projectConfig.projectName);
+      printExampleCurlCommand(result.projectId, hmacInfo.hmacKey, projectConfig.projectName);
     } catch {
       // Silently skip if we can't get HMAC key
     }
@@ -167,11 +167,11 @@ export async function deployCommand(options: { folder?: string }): Promise<void>
 /**
  * Generate a JWT token for API access
  */
-function generateJwt(projectUuid: string, hmacKey: string): string {
+function generateJwt(projectId: string, hmacKey: string): string {
   const now = Math.floor(Date.now() / 1000);
   const payload = {
     sub: "example-user",
-    iss: projectUuid,
+    iss: projectId,
     exp: now + 3600, // 1 hour
     iat: now,
     budget: {
@@ -195,8 +195,8 @@ function generateJwt(projectUuid: string, hmacKey: string): string {
 /**
  * Print example curl command for the /prompt endpoint
  */
-function printExampleCurlCommand(projectUuid: string, hmacKey: string, projectName: string): void {
-  const token = generateJwt(projectUuid, hmacKey);
+function printExampleCurlCommand(projectId: string, hmacKey: string, projectName: string): void {
+  const token = generateJwt(projectId, hmacKey);
 
   console.log(chalk.bold("\n\nExample API Usage"));
   console.log(chalk.dim("─".repeat(50)));
@@ -239,8 +239,8 @@ curl -X POST 'https://conjure.chucky.cloud/prompt' \\
   console.log(chalk.cyan(`
 import crypto from 'crypto';
 
-const hmacKey = '${hmacKey}';
-const projectUuid = '${projectUuid}';
+const hmacSecret = '${hmacKey}';
+const projectId = '${projectId}';
 
 function signJwt(payload, secret) {
   const header = { alg: 'HS256', typ: 'JWT' };
@@ -255,14 +255,15 @@ function signJwt(payload, secret) {
 const now = Math.floor(Date.now() / 1000);
 const token = signJwt({
   sub: 'your-user-id',
-  iss: projectUuid,
+  iss: projectId,
   exp: now + 3600,
   iat: now,
   budget: { ai: 1000000, compute: 3600000, window: 'hour' }
-}, hmacKey);
+}, hmacSecret);
 `));
 
   console.log(chalk.dim("Project: " + projectName));
-  console.log(chalk.dim("HMAC Key: " + hmacKey));
+  console.log(chalk.dim("Project ID: " + projectId));
+  console.log(chalk.dim("HMAC Secret: " + hmacKey));
   console.log(chalk.dim("API Endpoint: https://conjure.chucky.cloud/prompt"));
 }
