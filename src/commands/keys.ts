@@ -11,11 +11,17 @@ export async function keysCommand(): Promise<void> {
     const projectConfig = requireProjectConfig();
     const api = new ChuckyApi(apiKey);
 
+    if (!projectConfig.projectId) {
+      spinner.fail("Project not linked");
+      console.log(chalk.red("\nError: Project not linked. Run 'chucky init' first."));
+      process.exit(1);
+    }
+
     const keyInfo = await api.getHmacKey(projectConfig.projectId);
 
     spinner.stop();
 
-    console.log(chalk.bold(`\nHMAC Key for ${projectConfig.projectName}\n`));
+    console.log(chalk.bold(`\nHMAC Key for ${projectConfig.name}\n`));
     console.log(chalk.dim("Use this key to sign JWTs for your users.\n"));
     console.log(`  ${chalk.bold("Key:")} ${keyInfo.hmacKey}`);
     console.log(

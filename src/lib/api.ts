@@ -1,4 +1,4 @@
-import { getPortalUrl } from "./config.js";
+import { getPortalUrl, type CronDefinition } from "./config.js";
 
 export interface Project {
   id: string;
@@ -23,9 +23,26 @@ export interface UploadUrlInfo {
 export interface ValidationResult {
   valid: boolean;
   customer_id?: string;
+  clerkId?: string;
   email?: string;
   credit_balance_usd?: number;
   error?: string;
+}
+
+export interface CronJob {
+  _id: string;
+  projectId: string;
+  cron: string;
+  timezone: string;
+  enabled: boolean;
+  message: string;
+  triggerScheduleId?: string;
+}
+
+export interface SyncCronsResult {
+  created: number;
+  deleted: number;
+  scheduleIds: string[];
 }
 
 /**
@@ -151,5 +168,30 @@ export class ChuckyApi {
       "/api/projects/workspace-uploaded",
       { projectId }
     );
+  }
+
+  /**
+   * List cron jobs for a project
+   */
+  async listCronJobs(projectId: string): Promise<CronJob[]> {
+    const result = await this.request<{ cronJobs: CronJob[] }>(
+      "POST",
+      "/api/crons/list",
+      { projectId }
+    );
+    return result.cronJobs;
+  }
+
+  /**
+   * Sync cron jobs for a project (delete all + recreate)
+   */
+  async syncCrons(
+    projectId: string,
+    crons: CronDefinition[]
+  ): Promise<SyncCronsResult> {
+    return this.request<SyncCronsResult>("POST", "/api/crons/sync", {
+      projectId,
+      crons,
+    });
   }
 }

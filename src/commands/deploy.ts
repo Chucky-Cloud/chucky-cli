@@ -82,11 +82,22 @@ export async function deployCommand(options: { folder?: string }): Promise<void>
     // Check if project is initialized
     let projectConfig = loadProjectConfig();
     if (!projectConfig) {
-      console.log(chalk.yellow("No project configuration found. Let's initialize one.\n"));
+      console.log(chalk.yellow("No chucky.json found. Let's initialize one.\n"));
       await initCommand({ yes: false });
       projectConfig = loadProjectConfig();
       if (!projectConfig) {
         throw new Error("Project initialization failed");
+      }
+      console.log(""); // Add spacing
+    }
+
+    // Check if project is bound (has .chucky with projectId)
+    if (!projectConfig.projectId) {
+      console.log(chalk.yellow("Project not linked. Let's link it to a Chucky project.\n"));
+      await initCommand({ yes: false });
+      projectConfig = loadProjectConfig();
+      if (!projectConfig?.projectId) {
+        throw new Error("Project linking failed");
       }
       console.log(""); // Add spacing
     }
@@ -102,7 +113,7 @@ export async function deployCommand(options: { folder?: string }): Promise<void>
       process.exit(1);
     }
 
-    console.log(chalk.dim(`Project: ${projectConfig.projectName}`));
+    console.log(chalk.dim(`Project: ${projectConfig.name}`));
     console.log(chalk.dim(`Folder: ${fullPath}\n`));
 
     // Step 1: Create archive
@@ -115,7 +126,7 @@ export async function deployCommand(options: { folder?: string }): Promise<void>
 
     // Step 2: Get upload URL
     const urlSpinner = ora("Getting upload URL...").start();
-    const uploadInfo = await api.getUploadUrl(projectConfig.projectId);
+    const uploadInfo = await api.getUploadUrl(projectConfig.projectId!);
     urlSpinner.succeed("Got upload URL");
 
     // Step 3: Upload to R2
@@ -130,7 +141,7 @@ export async function deployCommand(options: { folder?: string }): Promise<void>
 
     // Step 4: Mark workspace as uploaded
     const syncSpinner = ora("Finalizing deployment...").start();
-    const result = await api.markWorkspaceUploaded(projectConfig.projectId);
+    const result = await api.markWorkspaceUploaded(projectConfig.projectId!);
     syncSpinner.succeed("Deployment complete");
 
     // Clean up temp file
@@ -138,14 +149,41 @@ export async function deployCommand(options: { folder?: string }): Promise<void>
       unlinkSync(archivePath);
     }
 
+    // Step 5: Sync cron jobs (always sync to clear old ones if removed)
+    const cronsToSync = projectConfig.crons || [];
+    const cronSpinner = ora(
+      cronsToSync.length > 0
+        ? `Syncing ${cronsToSync.length} cron job(s)...`
+        : "Syncing cron jobs..."
+    ).start();
+    try {
+      const cronResult = await api.syncCrons(projectConfig.projectId!, cronsToSync);
+      if (cronsToSync.length > 0 || cronResult.deleted > 0) {
+        cronSpinner.succeed(
+          cronsToSync.length > 0
+            ? `Synced ${cronResult.created} cron job(s)` +
+                (cronResult.deleted > 0 ? ` (${cronResult.deleted} removed)` : "")
+            : `Cleared ${cronResult.deleted} cron job(s)`
+        );
+      } else {
+        cronSpinner.succeed("No cron jobs to sync");
+      }
+    } catch (cronError) {
+      cronSpinner.fail(`Failed to sync cron jobs: ${(cronError as Error).message}`);
+      // Don't exit - deployment was still successful
+    }
+
     console.log(chalk.bold.green("\nDeployment successful!"));
     console.log(chalk.dim(`\nProject ID: ${result.projectId}`));
     console.log(chalk.dim(`Workspace: ${uploadInfo.key}`));
+    if (cronsToSync.length > 0) {
+      console.log(chalk.dim(`Cron jobs: ${cronsToSync.length}`));
+    }
 
     // Get HMAC key for example curl command
     try {
-      const hmacInfo = await api.getHmacKey(projectConfig.projectId);
-      printExampleCurlCommand(result.projectId, hmacInfo.hmacKey, projectConfig.projectName);
+      const hmacInfo = await api.getHmacKey(projectConfig.projectId!);
+      printExampleCurlCommand(result.projectId, hmacInfo.hmacKey, projectConfig.name);
     } catch {
       // Silently skip if we can't get HMAC key
     }

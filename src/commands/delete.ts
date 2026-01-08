@@ -18,16 +18,16 @@ export async function deleteCommand(projectIdArg?: string): Promise<void> {
     if (!projectId) {
       const projectConfig = loadProjectConfig();
 
-      if (projectConfig) {
+      if (projectConfig && projectConfig.projectId) {
         // Use current project
         const useCurrent = await confirm({
-          message: `Delete current project '${projectConfig.projectName}'?`,
+          message: `Delete current project '${projectConfig.name}'?`,
           default: false,
         });
 
         if (useCurrent) {
           projectId = projectConfig.projectId;
-          projectName = projectConfig.projectName;
+          projectName = projectConfig.name;
         }
       }
 

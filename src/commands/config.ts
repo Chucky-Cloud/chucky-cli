@@ -37,12 +37,17 @@ export async function configAnthropicCommand(options: { key?: string }): Promise
       process.exit(1);
     }
 
+    if (!projectConfig.projectId) {
+      console.log(chalk.red("\nError: Project not linked. Run 'chucky init' first."));
+      process.exit(1);
+    }
+
     const spinner = ora("Updating Anthropic API key...").start();
 
     await api.setAnthropicKey(projectConfig.projectId, anthropicKey);
 
     spinner.succeed("Anthropic API key updated");
-    console.log(chalk.dim(`\nProject: ${projectConfig.projectName}`));
+    console.log(chalk.dim(`\nProject: ${projectConfig.name}`));
   } catch (error) {
     console.log(chalk.red(`\nError: ${(error as Error).message}`));
     process.exit(1);
