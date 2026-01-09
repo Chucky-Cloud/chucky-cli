@@ -56,6 +56,8 @@ export interface Job {
   isCompleted: boolean;
   isSuccess: boolean;
   isFailed: boolean;
+  output?: unknown;
+  error?: { message: string; name?: string };
 }
 
 export interface ListJobsResult {

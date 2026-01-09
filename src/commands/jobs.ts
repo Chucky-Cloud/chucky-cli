@@ -86,7 +86,7 @@ async function listJobs(options: {
   }
 }
 
-async function getJob(jobId: string): Promise<void> {
+async function getJob(jobId: string, options: { json?: boolean } = {}): Promise<void> {
   const spinner = ora("Fetching job...").start();
 
   try {
@@ -95,6 +95,12 @@ async function getJob(jobId: string): Promise<void> {
     const { job } = await api.getJob(jobId);
 
     spinner.stop();
+
+    // JSON output mode
+    if (options.json) {
+      console.log(JSON.stringify(job, null, 2));
+      return;
+    }
 
     console.log(chalk.bold(`\nJob: ${job.id}\n`));
     console.log(`  Status: ${formatStatus(job)}`);
@@ -109,6 +115,25 @@ async function getJob(jobId: string): Promise<void> {
     console.log(
       `  Duration: ${chalk.dim(formatDuration(job.startedAt, job.finishedAt))}`
     );
+
+    // Show error if failed
+    if (job.error) {
+      console.log();
+      console.log(chalk.red(`  Error: ${job.error.message}`));
+    }
+
+    // Show output/response if available
+    if (job.output !== undefined) {
+      console.log();
+      console.log(chalk.bold("  Response:"));
+      const outputStr = typeof job.output === "string"
+        ? job.output
+        : JSON.stringify(job.output, null, 2);
+      // Indent each line
+      const indented = outputStr.split("\n").map(line => `    ${line}`).join("\n");
+      console.log(chalk.cyan(indented));
+    }
+
     console.log();
   } catch (error) {
     spinner.fail("Failed to fetch job");
@@ -283,6 +308,7 @@ export function createJobsCommand(): Command {
   cmd
     .command("get <jobId>")
     .description("Get details of a specific job")
+    .option("--json", "Output raw JSON response")
     .action(getJob);
 
   cmd
