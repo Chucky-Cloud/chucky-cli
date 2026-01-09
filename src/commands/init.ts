@@ -3,6 +3,7 @@ import chalk from "chalk";
 import ora from "ora";
 import { existsSync, mkdirSync, writeFileSync, readFileSync, appendFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { execSync } from "node:child_process";
 import {
   isLoggedIn,
   loadGlobalConfig,
@@ -94,8 +95,44 @@ jobs:
           CHUCKY_API_KEY: \${{ secrets.CHUCKY_API_KEY }}
 `;
 
+/**
+ * Check if current directory is a git repo, offer to initialize if not
+ */
+async function ensureGitRepo(): Promise<void> {
+  const gitDir = join(process.cwd(), ".git");
+
+  if (existsSync(gitDir)) {
+    return; // Already a git repo
+  }
+
+  const initGit = await confirm({
+    message: "This folder is not a git repository. Initialize git?",
+    default: true,
+  });
+
+  if (!initGit) {
+    console.log(chalk.yellow("\nWarning: Chucky requires a git repository for deployments."));
+    return;
+  }
+
+  const spinner = ora("Initializing git repository...").start();
+
+  try {
+    execSync("git init", { cwd: process.cwd(), stdio: "pipe" });
+    execSync("git add -A", { cwd: process.cwd(), stdio: "pipe" });
+    execSync('git commit -m "Initial commit"', { cwd: process.cwd(), stdio: "pipe" });
+    spinner.succeed("Git repository initialized with initial commit");
+  } catch (error) {
+    spinner.fail("Failed to initialize git");
+    throw error;
+  }
+}
+
 export async function initCommand(options: { yes?: boolean }): Promise<void> {
   console.log(chalk.bold("\nInitialize Chucky Project\n"));
+
+  // Ensure we have a git repo
+  await ensureGitRepo();
 
   // Check existing config state
   const existingConfig = loadChuckyConfig();

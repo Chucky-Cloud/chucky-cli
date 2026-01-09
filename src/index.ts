@@ -10,13 +10,21 @@ import { configAnthropicCommand } from "./commands/config.js";
 import { deleteCommand } from "./commands/delete.js";
 import { promptCommand } from "./commands/prompt.js";
 import { createJobsCommand } from "./commands/jobs.js";
+import { fetchCommand } from "./commands/fetch.js";
+import { diffCommand } from "./commands/diff.js";
+import { logCommand } from "./commands/log.js";
+import { applyCommand } from "./commands/apply.js";
+import { discardCommand } from "./commands/discard.js";
+import { waitCommand } from "./commands/wait.js";
+import { pullCommand } from "./commands/pull.js";
+import { sessionsCommand } from "./commands/sessions.js";
 
 const program = new Command();
 
 program
   .name("chucky")
   .description("CLI for deploying workspaces to Chucky cloud")
-  .version("0.2.4");
+  .version("0.2.9");
 
 // Login command
 program
@@ -44,6 +52,9 @@ program
   .command("deploy")
   .description("Deploy workspace to Chucky")
   .option("-f, --folder <path>", "Folder to deploy (overrides config)")
+  .option("--force", "Auto-commit uncommitted changes")
+  .option("--json", "Output as JSON")
+  .option("--quiet", "No output, just exit code")
   .action(deployCommand);
 
 // Keys command
@@ -90,10 +101,82 @@ program
   .option("--agents <json>", "Custom agents definition (JSON)")
   .option("--betas <betas>", "Beta headers (comma-separated)")
   .option("--allow-possession", "Enable host tools - Claude can execute commands on your machine")
+  .option("--apply", "Auto-apply file changes to local workspace after session completes")
   .action(promptCommand);
 
 // Jobs command
 program.addCommand(createJobsCommand());
+
+// Sessions command
+program
+  .command("sessions")
+  .description("List sessions")
+  .option("-n, --limit <number>", "Number of sessions to show", "20")
+  .option("--with-bundle", "Only show sessions with bundles")
+  .option("--json", "Output as JSON")
+  .action((options) => sessionsCommand({
+    limit: parseInt(options.limit),
+    withBundle: options.withBundle,
+    json: options.json,
+  }));
+
+// Fetch command - download job/session results to temp branch
+program
+  .command("fetch <id>")
+  .description("Download job/session bundle to temp branch (auto-detects type by ID prefix)")
+  .option("--json", "Output as JSON")
+  .option("--quiet", "No output, just exit code")
+  .action(fetchCommand);
+
+// Diff command - show what agent changed
+program
+  .command("diff <id>")
+  .description("Show what agent changed (auto-detects job/session by ID prefix)")
+  .option("--json", "Output as JSON")
+  .option("--stat", "Show file stats only")
+  .action(diffCommand);
+
+// Log command - show agent's commits
+program
+  .command("log <id>")
+  .description("Show agent's commits (auto-detects job/session by ID prefix)")
+  .option("--json", "Output as JSON")
+  .action(logCommand);
+
+// Apply command - merge agent changes to current branch
+program
+  .command("apply <id>")
+  .description("Merge agent changes to current branch (auto-detects job/session by ID prefix)")
+  .option("--force", "Force merge even if not fast-forward")
+  .option("--json", "Output as JSON")
+  .option("--quiet", "No output, just exit code")
+  .action(applyCommand);
+
+// Discard command - delete agent's temp branch
+program
+  .command("discard <id>")
+  .description("Delete agent's temp branch (auto-detects job/session by ID prefix)")
+  .option("--json", "Output as JSON")
+  .option("--quiet", "No output, just exit code")
+  .action(discardCommand);
+
+// Wait command - wait for job to complete
+program
+  .command("wait <job-id>")
+  .description("Wait for job to complete")
+  .option("--timeout <seconds>", "Max wait time in seconds", "300")
+  .option("--json", "Output as JSON")
+  .option("--quiet", "No output, just exit code")
+  .action(waitCommand);
+
+// Pull command - fetch and apply results
+program
+  .command("pull <id>")
+  .description("Fetch and apply results (auto-detects job/session by ID prefix)")
+  .option("--force", "Force apply")
+  .option("--json", "Output as JSON")
+  .option("--quiet", "No output, just exit code")
+  .action(pullCommand);
 
 // Parse arguments
 program.parse();

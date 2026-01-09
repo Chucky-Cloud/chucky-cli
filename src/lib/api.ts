@@ -66,6 +66,38 @@ export interface ListJobsResult {
   hasMore: boolean;
 }
 
+export interface Session {
+  id: string;
+  issuer_id: string;
+  user_id: string;
+  job_id: string | null;
+  status: string;
+  started_at: string;
+  completed_at: string | null;
+  duration_ms: number | null;
+  total_cost_usd: number | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  has_bundle: boolean;
+  bundle_has_changes: boolean;
+}
+
+export interface ListSessionsResult {
+  sessions: Session[];
+  pagination: {
+    limit: number;
+    offset: number;
+    hasMore: boolean;
+  };
+}
+
+export interface SessionBundleResult {
+  session_id: string;
+  download_url: string;
+  has_changes: boolean;
+  expires_in: number;
+}
+
 /**
  * API client for the Chucky portal
  */
@@ -244,4 +276,87 @@ export class ChuckyApi {
   async cancelJob(jobId: string): Promise<{ success: boolean }> {
     return this.request<{ success: boolean }>("POST", "/api/jobs/cancel", { jobId });
   }
+
+  /**
+   * Get bundle download URL for a job
+   */
+  async getJobBundle(jobId: string): Promise<{ downloadUrl: string; hasChanges: boolean }> {
+    return this.request<{ downloadUrl: string; hasChanges: boolean }>(
+      "POST",
+      "/api/jobs/bundle",
+      { jobId }
+    );
+  }
+
+  /**
+   * List sessions
+   */
+  async listSessions(options?: {
+    limit?: number;
+    offset?: number;
+    withBundle?: boolean;
+    userId?: string;
+    jobId?: string;
+    projectId?: string;
+  }): Promise<ListSessionsResult> {
+    return this.request<ListSessionsResult>("POST", "/api/sessions/list", {
+      limit: options?.limit,
+      offset: options?.offset,
+      with_bundle: options?.withBundle,
+      user_id: options?.userId,
+      job_id: options?.jobId,
+      project_id: options?.projectId,
+    });
+  }
+
+  /**
+   * Get a specific session
+   */
+  async getSession(sessionId: string): Promise<Session> {
+    return this.request<Session>("POST", "/api/sessions/get", {
+      session_id: sessionId,
+    });
+  }
+
+  /**
+   * Get bundle download URL for a session
+   */
+  async getSessionBundle(sessionId: string): Promise<SessionBundleResult> {
+    return this.request<SessionBundleResult>("POST", "/api/sessions/bundle", {
+      session_id: sessionId,
+    });
+  }
+
+  /**
+   * Resolve a partial session ID to the full UUID
+   * Supports prefix matching like git commit hashes
+   */
+  async resolveSessionId(partialId: string, projectId?: string): Promise<string> {
+    // If it looks like a full UUID, return as-is
+    if (partialId.length >= 36) {
+      return partialId;
+    }
+
+    // Fetch recent sessions and find matching prefix
+    const result = await this.listSessions({ limit: 100, projectId });
+    const matches = result.sessions.filter(s => s.id.startsWith(partialId));
+
+    if (matches.length === 0) {
+      throw new Error(`No session found matching '${partialId}'`);
+    }
+
+    if (matches.length > 1) {
+      throw new Error(`Ambiguous session ID '${partialId}' - matches ${matches.length} sessions. Use more characters.`);
+    }
+
+    return matches[0].id;
+  }
+
+}
+
+/**
+ * Detect if an ID is a job ID (prefixed with run_) or a session ID
+ */
+export function isJobId(id: string): boolean {
+  return id.startsWith("run_");
 }

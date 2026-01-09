@@ -3,25 +3,16 @@ import { tmpdir } from "node:os";
 import { join, basename } from "node:path";
 import archiver from "archiver";
 
-// Default patterns to ignore when creating archive
+// Minimal patterns to ignore (only temp/system files)
 const DEFAULT_IGNORE_PATTERNS = [
-  "node_modules/**",
-  ".git/**",
-  ".env",
-  ".env.*",
-  "*.log",
   ".DS_Store",
   "Thumbs.db",
-  ".chucky.json",
-  "dist/**",
-  "build/**",
-  ".next/**",
-  ".nuxt/**",
-  "coverage/**",
-  ".cache/**",
   "*.tgz",
   "*.tar.gz",
 ];
+
+// Patterns to ignore when not including git
+const GIT_IGNORE_PATTERNS = [".git/**"];
 
 export interface ArchiveResult {
   path: string;
@@ -29,13 +20,24 @@ export interface ArchiveResult {
   fileCount: number;
 }
 
+export interface ArchiveOptions {
+  ignorePatterns?: string[];
+  includeGit?: boolean;
+}
+
 /**
  * Create a tar.gz archive of a directory
  */
 export async function createArchive(
   sourceDir: string,
-  ignorePatterns: string[] = DEFAULT_IGNORE_PATTERNS
+  options: ArchiveOptions = {}
 ): Promise<ArchiveResult> {
+  const { ignorePatterns = DEFAULT_IGNORE_PATTERNS, includeGit = false } = options;
+
+  // Build final ignore patterns
+  const finalIgnorePatterns = includeGit
+    ? ignorePatterns
+    : [...ignorePatterns, ...GIT_IGNORE_PATTERNS];
   const archiveName = `workspace-${Date.now()}.tgz`;
   const archivePath = join(tmpdir(), archiveName);
 
@@ -70,7 +72,7 @@ export async function createArchive(
     // Add directory contents, respecting ignore patterns
     archive.glob("**/*", {
       cwd: sourceDir,
-      ignore: ignorePatterns,
+      ignore: finalIgnorePatterns,
       dot: true, // Include dotfiles
     });
 

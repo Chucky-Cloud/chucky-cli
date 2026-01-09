@@ -1,8 +1,8 @@
 import chalk from "chalk";
 import ora from "ora";
 import crypto from "node:crypto";
-import { resolve } from "node:path";
-import { existsSync, unlinkSync } from "node:fs";
+import { resolve, join } from "node:path";
+import { existsSync, unlinkSync, writeFileSync } from "node:fs";
 import {
   isLoggedIn,
   loadProjectConfig,
@@ -14,10 +14,12 @@ import { createArchive, formatBytes } from "../lib/archive.js";
 import { uploadToR2 } from "../lib/r2.js";
 import { password } from "@inquirer/prompts";
 import { initCommand } from "./init.js";
+import { getGitInfo, autoCommit } from "../lib/git.js";
+import { ExitCode, exitWithError, output, type OutputOptions } from "../lib/output.js";
 
 const DEFAULT_PORTAL_URL = "https://hidden-owl-118.convex.site";
 
-async function ensureLoggedIn(): Promise<string> {
+async function ensureLoggedIn(options: OutputOptions): Promise<string> {
   // Check environment variable first
   const envKey = process.env.CHUCKY_API_KEY;
   if (envKey) {
@@ -28,6 +30,18 @@ async function ensureLoggedIn(): Promise<string> {
   if (isLoggedIn()) {
     const config = loadGlobalConfig();
     return config!.apiKey;
+  }
+
+  // In JSON/quiet mode, don't prompt - just fail
+  if (options.json || options.quiet) {
+    exitWithError(
+      ExitCode.NETWORK_ERROR,
+      {
+        error: "not_logged_in",
+        message: "Not logged in. Run 'chucky login' first or set CHUCKY_API_KEY environment variable.",
+      },
+      options
+    );
   }
 
   // Guide user through login
@@ -70,18 +84,44 @@ async function ensureLoggedIn(): Promise<string> {
   return apiKey;
 }
 
-export async function deployCommand(options: { folder?: string }): Promise<void> {
-  console.log(chalk.bold("\nDeploying to Chucky\n"));
+export interface DeployOptions {
+  folder?: string;
+  force?: boolean;
+  json?: boolean;
+  quiet?: boolean;
+}
+
+export async function deployCommand(options: DeployOptions): Promise<void> {
+  const outputOpts: OutputOptions = {
+    json: options.json,
+    quiet: options.quiet,
+  };
+
+  // Only show header in interactive mode
+  if (!options.json && !options.quiet) {
+    console.log(chalk.bold("\nDeploying to Chucky\n"));
+  }
 
   let archivePath: string | null = null;
+  let chuckyStartPath: string | null = null;
 
   try {
     // Ensure user is logged in
-    const apiKey = await ensureLoggedIn();
+    const apiKey = await ensureLoggedIn(outputOpts);
 
     // Check if project is initialized
     let projectConfig = loadProjectConfig();
     if (!projectConfig) {
+      if (options.json || options.quiet) {
+        exitWithError(
+          ExitCode.NOT_FOUND,
+          {
+            error: "no_project",
+            message: "No chucky.json found. Run 'chucky init' first.",
+          },
+          outputOpts
+        );
+      }
       console.log(chalk.yellow("No chucky.json found. Let's initialize one.\n"));
       await initCommand({ yes: false });
       projectConfig = loadProjectConfig();
@@ -93,6 +133,16 @@ export async function deployCommand(options: { folder?: string }): Promise<void>
 
     // Check if project is bound (has .chucky with projectId)
     if (!projectConfig.projectId) {
+      if (options.json || options.quiet) {
+        exitWithError(
+          ExitCode.NOT_FOUND,
+          {
+            error: "project_not_linked",
+            message: "Project not linked. Run 'chucky init' first.",
+          },
+          outputOpts
+        );
+      }
       console.log(chalk.yellow("Project not linked. Let's link it to a Chucky project.\n"));
       await initCommand({ yes: false });
       projectConfig = loadProjectConfig();
@@ -109,86 +159,176 @@ export async function deployCommand(options: { folder?: string }): Promise<void>
     const fullPath = resolve(folder);
 
     if (!existsSync(fullPath)) {
-      console.log(chalk.red(`\nError: Directory does not exist: ${fullPath}`));
-      process.exit(1);
+      exitWithError(
+        ExitCode.NOT_FOUND,
+        {
+          error: "folder_not_found",
+          message: `Directory does not exist: ${fullPath}`,
+          folder: fullPath,
+        },
+        outputOpts
+      );
     }
 
-    console.log(chalk.dim(`Project: ${projectConfig.name}`));
-    console.log(chalk.dim(`Folder: ${fullPath}\n`));
+    // Git validation
+    const gitInfo = getGitInfo(fullPath);
 
-    // Step 1: Create archive
-    const archiveSpinner = ora("Creating archive...").start();
-    const archive = await createArchive(fullPath);
+    if (!gitInfo.isRepo) {
+      exitWithError(
+        ExitCode.NOT_GIT_REPO,
+        {
+          error: "not_a_git_repo",
+          message: `Folder '${folder}' is not a git repository. Initialize with: git init && git add -A && git commit -m "Initial"`,
+          folder,
+        },
+        outputOpts
+      );
+    }
+
+    if (!gitInfo.isRoot) {
+      exitWithError(
+        ExitCode.NOT_GIT_REPO,
+        {
+          error: "nested_repo",
+          message: `Folder '${folder}' is part of a parent git repository. The deploy folder must be its own git root.`,
+          folder,
+        },
+        outputOpts
+      );
+    }
+
+    // Check for uncommitted changes
+    if (gitInfo.isDirty) {
+      if (options.force) {
+        if (!options.json && !options.quiet) {
+          console.log(chalk.yellow("Auto-committing uncommitted changes..."));
+        }
+        autoCommit(fullPath, "Auto-commit before deploy");
+      } else {
+        exitWithError(
+          ExitCode.DIRTY_WORKSPACE,
+          {
+            error: "dirty_workspace",
+            message: "Uncommitted changes in workspace. Use --force to auto-commit.",
+            files: gitInfo.dirtyFiles,
+          },
+          outputOpts
+        );
+      }
+    }
+
+    // Record starting commit
+    const startCommit = getGitInfo(fullPath).headCommit;
+
+    // Write .chucky-start file so worker knows the baseline commit
+    chuckyStartPath = join(fullPath, ".chucky-start");
+    writeFileSync(chuckyStartPath, startCommit, "utf-8");
+
+    if (!options.json && !options.quiet) {
+      console.log(chalk.dim(`Project: ${projectConfig.name}`));
+      console.log(chalk.dim(`Folder: ${fullPath}`));
+      console.log(chalk.dim(`Start commit: ${startCommit.slice(0, 7)}\n`));
+    }
+
+    // Step 1: Create archive (include .git)
+    const archiveSpinner = options.json || options.quiet ? null : ora("Creating archive...").start();
+    const archive = await createArchive(fullPath, { includeGit: true });
     archivePath = archive.path;
-    archiveSpinner.succeed(
+    archiveSpinner?.succeed(
       `Archive created (${formatBytes(archive.size)}, ${archive.fileCount} files)`
     );
 
+    // Clean up .chucky-start file (it's in the archive now)
+    if (existsSync(chuckyStartPath)) {
+      unlinkSync(chuckyStartPath);
+    }
+
     // Step 2: Get upload URL
-    const urlSpinner = ora("Getting upload URL...").start();
+    const urlSpinner = options.json || options.quiet ? null : ora("Getting upload URL...").start();
     const uploadInfo = await api.getUploadUrl(projectConfig.projectId!);
-    urlSpinner.succeed("Got upload URL");
+    urlSpinner?.succeed("Got upload URL");
 
     // Step 3: Upload to R2
-    const uploadSpinner = ora("Uploading...").start();
+    const uploadSpinner = options.json || options.quiet ? null : ora("Uploading...").start();
 
     await uploadToR2(uploadInfo, archivePath, (uploaded, total) => {
-      const percent = Math.round((uploaded / total) * 100);
-      uploadSpinner.text = `Uploading... ${percent}% (${formatBytes(uploaded)}/${formatBytes(total)})`;
+      if (uploadSpinner) {
+        const percent = Math.round((uploaded / total) * 100);
+        uploadSpinner.text = `Uploading... ${percent}% (${formatBytes(uploaded)}/${formatBytes(total)})`;
+      }
     });
 
-    uploadSpinner.succeed(`Uploaded to R2 (${uploadInfo.key})`);
+    uploadSpinner?.succeed(`Uploaded to R2 (${uploadInfo.key})`);
 
     // Step 4: Mark workspace as uploaded
-    const syncSpinner = ora("Finalizing deployment...").start();
+    const syncSpinner = options.json || options.quiet ? null : ora("Finalizing deployment...").start();
     const result = await api.markWorkspaceUploaded(projectConfig.projectId!);
-    syncSpinner.succeed("Deployment complete");
+    syncSpinner?.succeed("Deployment complete");
 
     // Clean up temp file
     if (archivePath && existsSync(archivePath)) {
       unlinkSync(archivePath);
     }
 
-    // Step 5: Sync cron jobs (always sync to clear old ones if removed)
+    // Step 6: Sync cron jobs (always sync to clear old ones if removed)
     const cronsToSync = projectConfig.crons || [];
-    const cronSpinner = ora(
-      cronsToSync.length > 0
-        ? `Syncing ${cronsToSync.length} cron job(s)...`
-        : "Syncing cron jobs..."
-    ).start();
+    const cronSpinner =
+      options.json || options.quiet
+        ? null
+        : ora(
+            cronsToSync.length > 0
+              ? `Syncing ${cronsToSync.length} cron job(s)...`
+              : "Syncing cron jobs..."
+          ).start();
     try {
       const cronResult = await api.syncCrons(projectConfig.projectId!, cronsToSync);
       if (cronsToSync.length > 0 || cronResult.deleted > 0) {
-        cronSpinner.succeed(
+        cronSpinner?.succeed(
           cronsToSync.length > 0
             ? `Synced ${cronResult.created} cron job(s)` +
                 (cronResult.deleted > 0 ? ` (${cronResult.deleted} removed)` : "")
             : `Cleared ${cronResult.deleted} cron job(s)`
         );
       } else {
-        cronSpinner.succeed("No cron jobs to sync");
+        cronSpinner?.succeed("No cron jobs to sync");
       }
     } catch (cronError) {
-      cronSpinner.fail(`Failed to sync cron jobs: ${(cronError as Error).message}`);
+      cronSpinner?.fail(`Failed to sync cron jobs: ${(cronError as Error).message}`);
       // Don't exit - deployment was still successful
     }
 
-    console.log(chalk.bold.green("\nDeployment successful!"));
-    console.log(chalk.dim(`\nProject ID: ${result.projectId}`));
-    console.log(chalk.dim(`Workspace: ${uploadInfo.key}`));
-    if (cronsToSync.length > 0) {
-      console.log(chalk.dim(`Cron jobs: ${cronsToSync.length}`));
-    }
+    // Output result
+    if (options.json || options.quiet) {
+      output(
+        {
+          status: "deployed",
+          job_id: result.projectId,
+          start_commit: startCommit,
+          folder: fullPath,
+          project_name: projectConfig.name,
+          workspace_key: uploadInfo.key,
+        },
+        outputOpts
+      );
+    } else {
+      console.log(chalk.bold.green("\nDeployment successful!"));
+      console.log(chalk.dim(`\nProject ID: ${result.projectId}`));
+      console.log(chalk.dim(`Workspace: ${uploadInfo.key}`));
+      console.log(chalk.dim(`Start commit: ${startCommit.slice(0, 7)}`));
+      if (cronsToSync.length > 0) {
+        console.log(chalk.dim(`Cron jobs: ${cronsToSync.length}`));
+      }
 
-    // Get HMAC key for example curl command
-    try {
-      const hmacInfo = await api.getHmacKey(projectConfig.projectId!);
-      printExampleCurlCommand(result.projectId, hmacInfo.hmacKey, projectConfig.name);
-    } catch {
-      // Silently skip if we can't get HMAC key
+      // Get HMAC key for example curl command
+      try {
+        const hmacInfo = await api.getHmacKey(projectConfig.projectId!);
+        printExampleCurlCommand(result.projectId, hmacInfo.hmacKey, projectConfig.name);
+      } catch {
+        // Silently skip if we can't get HMAC key
+      }
     }
   } catch (error) {
-    // Clean up temp file on error
+    // Clean up temp files on error
     if (archivePath && existsSync(archivePath)) {
       try {
         unlinkSync(archivePath);
@@ -196,9 +336,27 @@ export async function deployCommand(options: { folder?: string }): Promise<void>
         // Ignore cleanup errors
       }
     }
+    if (chuckyStartPath && existsSync(chuckyStartPath)) {
+      try {
+        unlinkSync(chuckyStartPath);
+      } catch {
+        // Ignore cleanup errors
+      }
+    }
 
-    console.log(chalk.red(`\nError: ${(error as Error).message}`));
-    process.exit(1);
+    if (options.json || options.quiet) {
+      exitWithError(
+        ExitCode.NETWORK_ERROR,
+        {
+          error: "deploy_failed",
+          message: (error as Error).message,
+        },
+        outputOpts
+      );
+    } else {
+      console.log(chalk.red(`\nError: ${(error as Error).message}`));
+      process.exit(1);
+    }
   }
 }
 

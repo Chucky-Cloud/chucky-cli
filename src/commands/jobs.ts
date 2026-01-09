@@ -2,9 +2,16 @@ import { Command } from "commander";
 import chalk from "chalk";
 import ora from "ora";
 import crypto from "node:crypto";
-import { requireApiKey, requireProjectConfig, getWorkerUrl } from "../lib/config.js";
+import { createWriteStream } from "node:fs";
+import { unlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { pipeline } from "node:stream/promises";
+import { Readable } from "node:stream";
+import { requireApiKey, requireProjectConfig, loadProjectConfig, getWorkerUrl } from "../lib/config.js";
 import { ChuckyApi, type Job } from "../lib/api.js";
 import { generateToken } from "../lib/token.js";
+import { verifyBundle, fetchBundle, applyBranch, branchExists } from "../lib/git.js";
 
 interface IncubateResponse {
   vesselId: string;
@@ -168,6 +175,13 @@ async function createJob(
     callbackSecret?: string;
     ttl?: string;
     wait?: boolean;
+    apply?: boolean;
+    // SDK options
+    tools?: string;
+    allowedTools?: string;
+    disallowedTools?: string;
+    permissionMode?: string;
+    dangerouslySkipPermissions?: boolean;
   }
 ): Promise<void> {
   const spinner = ora("Creating job...").start();
@@ -199,6 +213,25 @@ async function createJob(
 
     // Build request body
     const workerUrl = getWorkerUrl();
+
+    // Parse tools option (can be JSON or comma-separated)
+    let toolsValue: unknown = undefined;
+    if (options.tools) {
+      try {
+        toolsValue = JSON.parse(options.tools);
+      } catch {
+        toolsValue = options.tools.split(",").map((t) => t.trim());
+      }
+    }
+
+    // Handle permission mode
+    let permissionMode = options.permissionMode;
+    let allowDangerouslySkipPermissions = false;
+    if (options.dangerouslySkipPermissions) {
+      permissionMode = "bypassPermissions";
+      allowDangerouslySkipPermissions = true;
+    }
+
     const body: Record<string, unknown> = {
       message,
       idempotencyKey,
@@ -207,6 +240,11 @@ async function createJob(
         ...(options.model && { model: options.model }),
         ...(options.systemPrompt && { systemPrompt: options.systemPrompt }),
         ...(options.maxTurns && { maxTurns: parseInt(options.maxTurns, 10) }),
+        ...(toolsValue !== undefined && { tools: toolsValue }),
+        ...(options.allowedTools && { allowedTools: options.allowedTools.split(",").map((t) => t.trim()) }),
+        ...(options.disallowedTools && { disallowedTools: options.disallowedTools.split(",").map((t) => t.trim()) }),
+        ...(permissionMode && { permissionMode }),
+        ...(allowDangerouslySkipPermissions && { allowDangerouslySkipPermissions }),
       },
     };
 
@@ -244,10 +282,19 @@ async function createJob(
 
     console.log(chalk.dim(`\nTrack with: chucky jobs get ${data.vesselId}`));
 
+    // --apply implies --wait
+    const shouldWait = options.wait || options.apply;
+
     // Wait for completion if requested
-    if (options.wait) {
+    if (shouldWait) {
       console.log();
-      await waitForJob(data.vesselId);
+      const completedJob = await waitForJob(data.vesselId);
+
+      // Apply changes if requested and job succeeded
+      if (options.apply && completedJob?.isSuccess) {
+        console.log();
+        await applyJobChanges(data.vesselId);
+      }
     }
   } catch (error) {
     spinner.fail("Failed to create job");
@@ -256,7 +303,124 @@ async function createJob(
   }
 }
 
-async function waitForJob(jobId: string): Promise<void> {
+async function applyJobChanges(jobId: string): Promise<void> {
+  const apiKey = requireApiKey();
+  const projectConfig = loadProjectConfig();
+  const api = new ChuckyApi(apiKey);
+
+  const folder = projectConfig?.folder || ".";
+  const fullPath = resolve(folder);
+  const branchName = `chucky/job-${jobId.replace(/^run_/, "")}`;
+  const shortId = jobId.slice(0, 12);
+
+  let bundlePath: string | null = null;
+
+  const spinner = ora("Waiting for bundle...").start();
+
+  try {
+    // Check if branch already exists
+    if (branchExists(fullPath, branchName)) {
+      spinner.warn(`Branch '${branchName}' already exists, skipping apply`);
+      return;
+    }
+
+    // Wait for bundle to be available (it's uploaded asynchronously after result)
+    let bundleInfo: { downloadUrl: string; hasChanges: boolean } | null = null;
+    const maxRetries = 15;  // Jobs may take longer to finalize
+    const retryDelayMs = 2000;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        bundleInfo = await api.getJobBundle(jobId);
+        break; // Success
+      } catch (error) {
+        const isNotFound = (error as Error).message.includes("not found") ||
+                          (error as Error).message.includes("No bundle");
+        if (isNotFound && attempt < maxRetries) {
+          spinner.text = `Waiting for bundle... (${attempt}/${maxRetries})`;
+          await new Promise(resolve => setTimeout(resolve, retryDelayMs));
+        } else {
+          throw error;
+        }
+      }
+    }
+
+    if (!bundleInfo) {
+      spinner.warn("Bundle not available yet, run 'chucky fetch' manually later");
+      return;
+    }
+
+    if (!bundleInfo.hasChanges) {
+      spinner.succeed("Job completed with no file changes");
+      return;
+    }
+
+    spinner.text = "Downloading bundle...";
+
+    // Download bundle
+    bundlePath = join(tmpdir(), `chucky-bundle-${jobId}.bundle`);
+    const response = await fetch(bundleInfo.downloadUrl);
+
+    if (!response.ok || !response.body) {
+      spinner.fail("Failed to download bundle");
+      console.log(chalk.red("Failed to download bundle from server"));
+      return;
+    }
+
+    const fileStream = createWriteStream(bundlePath);
+    await pipeline(Readable.fromWeb(response.body as any), fileStream);
+
+    spinner.text = "Verifying bundle...";
+
+    // Verify bundle
+    if (!verifyBundle(fullPath, bundlePath)) {
+      spinner.fail("Bundle verification failed");
+      console.log(chalk.red("Bundle verification failed. The bundle may be corrupted."));
+      return;
+    }
+
+    spinner.text = "Fetching to branch...";
+
+    // Fetch to temp branch
+    fetchBundle(fullPath, bundlePath, branchName);
+
+    spinner.text = "Applying changes...";
+
+    // Apply to working directory (with merge fallback)
+    let result: { commits: number; files: number };
+    try {
+      result = applyBranch(fullPath, branchName);
+    } catch (ffError) {
+      const errorMsg = (ffError as Error).message || "";
+      if (errorMsg.includes("fast-forward") || errorMsg.includes("diverging") || errorMsg.includes("Not possible")) {
+        spinner.text = "Merging changes...";
+        result = applyBranch(fullPath, branchName, { force: true });
+      } else {
+        throw ffError;
+      }
+    }
+
+    spinner.succeed(`Applied ${result.commits} commit(s) with ${result.files} file(s) changed`);
+
+    console.log(chalk.dim(`\nChanges from job ${shortId} have been applied to your working directory.`));
+    console.log(chalk.dim(`Branch '${branchName}' contains the original commits.`));
+  } catch (error) {
+    spinner.fail("Apply failed");
+    console.log(chalk.red(`\nError: ${(error as Error).message}`));
+    console.log(chalk.dim(`\nYou can manually run: chucky fetch ${jobId} && chucky apply ${jobId}`));
+  } finally {
+    // Clean up temp file
+    if (bundlePath) {
+      try {
+        await unlink(bundlePath);
+      } catch {
+        // Ignore cleanup errors
+      }
+    }
+  }
+}
+
+async function waitForJob(jobId: string): Promise<Job | null> {
   const spinner = ora("Waiting for job to complete...").start();
   const apiKey = requireApiKey();
   const api = new ChuckyApi(apiKey);
@@ -277,7 +441,7 @@ async function waitForJob(jobId: string): Promise<void> {
         }
 
         console.log(chalk.dim(`\nDuration: ${formatDuration(job.startedAt, job.finishedAt)}`));
-        return;
+        return job;
       }
 
       spinner.text = `Waiting for job... (${job.status})`;
@@ -290,6 +454,7 @@ async function waitForJob(jobId: string): Promise<void> {
 
   spinner.warn("Timeout waiting for job completion");
   console.log(chalk.dim(`\nJob is still running. Check status with: chucky jobs get ${jobId}`));
+  return null;
 }
 
 export function createJobsCommand(): Command {
@@ -326,6 +491,13 @@ export function createJobsCommand(): Command {
     .option("--callback-secret <secret>", "Secret for webhook HMAC signature")
     .option("--ttl <seconds>", "Delay execution by N seconds")
     .option("-w, --wait", "Wait for job completion")
+    .option("-a, --apply", "Wait for completion and apply changes (implies --wait)")
+    // SDK options
+    .option("--tools <tools>", 'Tools config (JSON or comma-separated names)')
+    .option("--allowed-tools <tools>", "Comma-separated list of allowed tools")
+    .option("--disallowed-tools <tools>", "Comma-separated list of disallowed tools")
+    .option("--permission-mode <mode>", "Permission mode (bypassPermissions, default, etc.)")
+    .option("--dangerously-skip-permissions", "Bypass all permission checks")
     .action(createJob);
 
   return cmd;

@@ -1,6 +1,11 @@
 import chalk from "chalk";
 import ora from "ora";
 import { select } from "@inquirer/prompts";
+import { createWriteStream, unlinkSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { pipeline } from "node:stream/promises";
+import { Readable } from "node:stream";
 import { requireApiKey, loadProjectConfig } from "../lib/config.js";
 import { ChuckyApi, Project } from "../lib/api.js";
 import {
@@ -23,6 +28,13 @@ import {
   executeHostGlob,
   executeHostGrep,
 } from "../lib/host-tools.js";
+import {
+  verifyBundle,
+  fetchBundle,
+  applyBranch,
+  getBundleStats,
+  branchExists,
+} from "../lib/git.js";
 
 export interface PromptOptions {
   project?: string;
@@ -42,6 +54,7 @@ export interface PromptOptions {
   agents?: string;
   betas?: string;
   allowPossession?: boolean;
+  apply?: boolean;
 }
 
 /**
@@ -151,16 +164,22 @@ You are running inside a sandboxed environment, but you have access to the USER'
 
     // Send the message
     await session.send(message);
-    spinner.stop();
+    spinner.text = "Waiting for response...";
 
     // Stream the response
     let finalResult: SDKMessage | null = null;
+    let isThinking = true;
 
     for await (const msg of session.stream()) {
       if (jsonOutput) {
         console.log(JSON.stringify(msg));
       } else {
         if (msg.type === "assistant") {
+          // Stop spinner on first assistant message
+          if (isThinking) {
+            spinner.stop();
+            isThinking = false;
+          }
           // Use SDK helper to extract text
           const text = getAssistantText(msg);
           if (text) {
@@ -171,6 +190,10 @@ You are running inside a sandboxed environment, but you have access to the USER'
           for (const block of content) {
             if (typeof block === "object" && block.type === "tool_use") {
               console.log(chalk.blue(`\n[Tool] ${block.name}`));
+              // Start spinner while tool executes
+              spinner.text = `Running ${block.name}...`;
+              spinner.start();
+              isThinking = true;
             }
           }
         } else if (msg.type === "user") {
@@ -179,6 +202,11 @@ You are running inside a sandboxed environment, but you have access to the USER'
           if (Array.isArray(content)) {
             for (const block of content) {
               if (typeof block === "object" && block.type === "tool_result") {
+                // Stop spinner when result arrives
+                if (isThinking) {
+                  spinner.stop();
+                  isThinking = false;
+                }
                 const resultContent = typeof block.content === "string"
                   ? block.content
                   : JSON.stringify(block.content);
@@ -186,13 +214,38 @@ You are running inside a sandboxed environment, but you have access to the USER'
                   ? resultContent.slice(0, 200) + "..."
                   : resultContent;
                 console.log(chalk.green(`[Result] ${preview}`));
+                // Start spinner while waiting for next response
+                spinner.text = "Thinking...";
+                spinner.start();
+                isThinking = true;
               }
             }
           }
+        } else if (msg.type === "system") {
+          // Show system messages
+          const systemMsg = (msg as any).message || (msg as any).content || "";
+          if (systemMsg) {
+            if (isThinking) {
+              spinner.stop();
+            }
+            console.log(chalk.magenta(`[System] ${systemMsg}`));
+            if (isThinking) {
+              spinner.start();
+            }
+          }
         } else if (msg.type === "result") {
+          if (isThinking) {
+            spinner.stop();
+            isThinking = false;
+          }
           finalResult = msg;
         }
       }
+    }
+
+    // Make sure spinner is stopped
+    if (isThinking) {
+      spinner.stop();
     }
 
     if (!jsonOutput) {
@@ -205,8 +258,18 @@ You are running inside a sandboxed environment, but you have access to the USER'
       }
     }
 
+    // Get session ID from result message (injected by worker) - this is the real server-side session ID
+    const serverSessionId = (finalResult as any)?.session_id;
+
     // Close the session
     session.close();
+
+    // Apply changes if --apply flag is set
+    if (options.apply && serverSessionId) {
+      await applySessionChanges(serverSessionId, jsonOutput);
+    } else if (options.apply && !serverSessionId) {
+      console.log(chalk.yellow("\nWarning: Could not get session ID from result, skipping apply"));
+    }
   } catch (error) {
     console.log(chalk.red(`\nError: ${(error as Error).message}`));
     process.exit(1);
@@ -487,4 +550,133 @@ function getHostTools(options: PromptOptions): ToolDefinition[] {
   }
 
   return tools;
+}
+
+/**
+ * Fetch and apply session changes to the local workspace
+ */
+async function applySessionChanges(sessionId: string, jsonOutput: boolean): Promise<void> {
+  const apiKey = requireApiKey();
+  const projectConfig = loadProjectConfig();
+  const api = new ChuckyApi(apiKey);
+
+  const folder = projectConfig?.folder || ".";
+  const fullPath = resolve(folder);
+  const branchName = `chucky/session-${sessionId}`;
+  const shortId = sessionId.slice(0, 8);
+
+  let bundlePath: string | null = null;
+
+  const spinner = jsonOutput ? null : ora("Waiting for bundle...").start();
+
+  try {
+    // Check if branch already exists (shouldn't happen for new session)
+    if (branchExists(fullPath, branchName)) {
+      spinner?.warn(`Branch '${branchName}' already exists, skipping apply`);
+      return;
+    }
+
+    // Wait for bundle to be available (it's uploaded asynchronously after result)
+    let bundleInfo: { download_url: string; has_changes: boolean } | null = null;
+    const maxRetries = 10;
+    const retryDelayMs = 1000;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        bundleInfo = await api.getSessionBundle(sessionId);
+        break; // Success
+      } catch (error) {
+        const isNotFound = (error as Error).message.includes("not found") ||
+                          (error as Error).message.includes("No bundle");
+        if (isNotFound && attempt < maxRetries) {
+          if (spinner) spinner.text = `Waiting for bundle... (${attempt}/${maxRetries})`;
+          await new Promise(resolve => setTimeout(resolve, retryDelayMs));
+        } else {
+          throw error;
+        }
+      }
+    }
+
+    if (!bundleInfo) {
+      spinner?.warn("Bundle not available yet, run 'chucky fetch' manually later");
+      return;
+    }
+
+    if (!bundleInfo.has_changes) {
+      spinner?.succeed("Session completed with no file changes");
+      return;
+    }
+
+    if (spinner) spinner.text = "Downloading bundle...";
+
+    // Download bundle
+    bundlePath = join(tmpdir(), `chucky-bundle-${sessionId}.bundle`);
+    const response = await fetch(bundleInfo.download_url);
+
+    if (!response.ok || !response.body) {
+      spinner?.fail("Failed to download bundle");
+      console.log(chalk.red("Failed to download bundle from server"));
+      return;
+    }
+
+    const fileStream = createWriteStream(bundlePath);
+    await pipeline(Readable.fromWeb(response.body as any), fileStream);
+
+    if (spinner) spinner.text = "Verifying bundle...";
+
+    // Verify bundle
+    if (!verifyBundle(fullPath, bundlePath)) {
+      spinner?.fail("Bundle verification failed");
+      console.log(chalk.red("Bundle verification failed. The bundle may be corrupted."));
+      return;
+    }
+
+    if (spinner) spinner.text = "Fetching to branch...";
+
+    // Fetch to temp branch
+    fetchBundle(fullPath, bundlePath, branchName);
+
+    if (spinner) spinner.text = "Applying changes...";
+
+    // Get stats
+    const stats = getBundleStats(fullPath, branchName);
+
+    // Apply the changes - try fast-forward first, fall back to merge if diverged
+    let result: { commits: number; files: number };
+    try {
+      result = applyBranch(fullPath, branchName);
+    } catch (ffError) {
+      const errorMsg = (ffError as Error).message;
+      if (errorMsg.includes("fast-forward") || errorMsg.includes("diverging")) {
+        if (spinner) spinner.text = "Branches diverged, creating merge commit...";
+        result = applyBranch(fullPath, branchName, { force: true });
+      } else {
+        throw ffError;
+      }
+    }
+
+    spinner?.succeed(`Applied ${result.commits} commit(s), ${result.files} file(s) changed`);
+
+    if (!jsonOutput) {
+      console.log(chalk.dim(`Changes: +${stats.insertions} -${stats.deletions}`));
+    }
+
+    // Clean up bundle file
+    if (bundlePath && existsSync(bundlePath)) {
+      unlinkSync(bundlePath);
+    }
+  } catch (error) {
+    // Clean up bundle file on error
+    if (bundlePath && existsSync(bundlePath)) {
+      try {
+        unlinkSync(bundlePath);
+      } catch {
+        // Ignore cleanup errors
+      }
+    }
+
+    spinner?.fail("Failed to apply changes");
+    console.log(chalk.red(`Apply error: ${(error as Error).message}`));
+    console.log(chalk.yellow(`You can manually run: chucky fetch ${shortId} && chucky apply ${shortId}`));
+  }
 }
