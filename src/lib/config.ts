@@ -230,6 +230,13 @@ export function getPortalUrl(): string {
 }
 
 /**
+ * Get worker URL (ChuckyBox)
+ */
+export function getWorkerUrl(): string {
+  return process.env.CHUCKY_WORKER_URL || "https://conjure.chucky.cloud";
+}
+
+/**
  * Get project config or throw if not initialized
  */
 export function requireProjectConfig(): ProjectConfig {
