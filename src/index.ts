@@ -9,6 +9,7 @@ import { keysCommand } from "./commands/keys.js";
 import { configAnthropicCommand } from "./commands/config.js";
 import { deleteCommand } from "./commands/delete.js";
 import { promptCommand } from "./commands/prompt.js";
+import { createJobsCommand } from "./commands/jobs.js";
 
 const program = new Command();
 
@@ -90,6 +91,9 @@ program
   .option("--betas <betas>", "Beta headers (comma-separated)")
   .option("--allow-possession", "Enable host tools - Claude can execute commands on your machine")
   .action(promptCommand);
+
+// Jobs command
+program.addCommand(createJobsCommand());
 
 // Parse arguments
 program.parse();

@@ -45,6 +45,25 @@ export interface SyncCronsResult {
   scheduleIds: string[];
 }
 
+export interface Job {
+  id: string;
+  status: string;
+  taskIdentifier: string;
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+  isCompleted: boolean;
+  isSuccess: boolean;
+  isFailed: boolean;
+}
+
+export interface ListJobsResult {
+  jobs: Job[];
+  nextCursor?: string;
+  hasMore: boolean;
+}
+
 /**
  * API client for the Chucky portal
  */
@@ -193,5 +212,34 @@ export class ChuckyApi {
       projectId,
       crons,
     });
+  }
+
+  /**
+   * List jobs (Trigger.dev runs)
+   */
+  async listJobs(options?: {
+    status?: string;
+    size?: number;
+    cursor?: string;
+  }): Promise<ListJobsResult> {
+    return this.request<ListJobsResult>("POST", "/api/jobs/list", {
+      status: options?.status,
+      size: options?.size,
+      cursor: options?.cursor,
+    });
+  }
+
+  /**
+   * Get a specific job
+   */
+  async getJob(jobId: string): Promise<{ job: Job }> {
+    return this.request<{ job: Job }>("POST", "/api/jobs/get", { jobId });
+  }
+
+  /**
+   * Cancel a job
+   */
+  async cancelJob(jobId: string): Promise<{ success: boolean }> {
+    return this.request<{ success: boolean }>("POST", "/api/jobs/cancel", { jobId });
   }
 }
