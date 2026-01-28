@@ -39,6 +39,7 @@ import {
 export interface PromptOptions {
   project?: string;
   token?: string;
+  vessel?: string;
   outputFormat?: "text" | "json" | "stream-json";
   jsonSchema?: string;
   model?: string;
@@ -157,7 +158,7 @@ You are running inside a sandboxed environment, but you have access to the USER'
     const spinner = ora(`Connecting to ${chalk.cyan(projectName)}...`).start();
 
     // Create client and session
-    const client = new ChuckyClient({ token });
+    const client = new ChuckyClient({ token, vessel: options.vessel });
     const session = await client.createSession(sessionOptions);
 
     spinner.text = `Sending prompt to ${chalk.cyan(projectName)}...`;

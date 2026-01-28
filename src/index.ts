@@ -24,7 +24,7 @@ const program = new Command();
 program
   .name("chucky")
   .description("CLI for deploying workspaces to Chucky cloud")
-  .version("0.2.9");
+  .version("0.3.0");
 
 // Login command
 program
@@ -86,6 +86,7 @@ program
   .description("Send a prompt to a Chucky project")
   .option("--project <name|id>", "Project to run against")
   .option("--token <jwt>", "Use a pre-generated JWT token")
+  .option("--vessel <name>", "Persistent sandbox name for session reuse")
   .option("--output-format <format>", "Output format: text, json, stream-json", "text")
   .option("--json-schema <schema>", "JSON Schema for structured output")
   .option("--model <model>", "Model: sonnet, opus, haiku, or full name")

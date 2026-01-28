@@ -176,6 +176,7 @@ async function createJob(
     ttl?: string;
     wait?: boolean;
     apply?: boolean;
+    vessel?: string;
     // SDK options
     tools?: string;
     allowedTools?: string;
@@ -235,6 +236,7 @@ async function createJob(
     const body: Record<string, unknown> = {
       message,
       idempotencyKey,
+      ...(options.vessel && { vessel: options.vessel }),
       options: {
         token,
         ...(options.model && { model: options.model }),
@@ -492,6 +494,7 @@ export function createJobsCommand(): Command {
     .option("--ttl <seconds>", "Delay execution by N seconds")
     .option("-w, --wait", "Wait for job completion")
     .option("-a, --apply", "Wait for completion and apply changes (implies --wait)")
+    .option("-v, --vessel <name>", "Persistent sandbox name for session reuse")
     // SDK options
     .option("--tools <tools>", 'Tools config (JSON or comma-separated names)')
     .option("--allowed-tools <tools>", "Comma-separated list of allowed tools")
