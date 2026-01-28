@@ -161,6 +161,23 @@ You are running inside a sandboxed environment, but you have access to the USER'
     const client = new ChuckyClient({ token, vessel: options.vessel });
     const session = await client.createSession(sessionOptions);
 
+    // Handle Ctrl+C gracefully - force exit since WebSocket can hang
+    let isExiting = false;
+    const cleanup = () => {
+      if (isExiting) {
+        // Second Ctrl+C - force kill immediately
+        process.kill(process.pid, "SIGKILL");
+        return;
+      }
+      isExiting = true;
+      spinner.stop();
+      console.log(chalk.yellow("\n\nInterrupted by user"));
+      // Don't wait for close - just force exit
+      setImmediate(() => process.exit(130));
+    };
+    process.on("SIGINT", cleanup);
+    process.on("SIGTERM", cleanup);
+
     spinner.text = `Sending prompt to ${chalk.cyan(projectName)}...`;
 
     // Send the message
@@ -271,6 +288,9 @@ You are running inside a sandboxed environment, but you have access to the USER'
     } else if (options.apply && !serverSessionId) {
       console.log(chalk.yellow("\nWarning: Could not get session ID from result, skipping apply"));
     }
+
+    // Force exit since WebSocket may keep event loop alive
+    process.exit(0);
   } catch (error) {
     console.log(chalk.red(`\nError: ${(error as Error).message}`));
     process.exit(1);
