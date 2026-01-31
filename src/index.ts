@@ -103,6 +103,7 @@ program
   .option("--betas <betas>", "Beta headers (comma-separated)")
   .option("--allow-possession", "Enable host tools - Claude can execute commands on your machine")
   .option("--apply", "Auto-apply file changes to local workspace after session completes")
+  .option("-e, --env <KEY=VALUE...>", "Environment variables to pass to sandbox (can specify multiple)")
   .action(promptCommand);
 
 // Jobs command

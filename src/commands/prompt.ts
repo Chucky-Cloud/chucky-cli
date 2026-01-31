@@ -56,6 +56,7 @@ export interface PromptOptions {
   betas?: string;
   allowPossession?: boolean;
   apply?: boolean;
+  env?: string[];
 }
 
 /**
@@ -451,6 +452,21 @@ function buildSessionOptions(options: PromptOptions): SessionOptions {
     } catch {
       throw new Error("Invalid JSON in --json-schema");
     }
+  }
+
+  // Parse environment variables: --env KEY=VALUE --env KEY2=VALUE2
+  if (options.env && options.env.length > 0) {
+    const envVars: Record<string, string> = {};
+    for (const envStr of options.env) {
+      const eqIndex = envStr.indexOf("=");
+      if (eqIndex === -1) {
+        throw new Error(`Invalid env format: ${envStr}. Expected KEY=VALUE`);
+      }
+      const key = envStr.slice(0, eqIndex);
+      const value = envStr.slice(eqIndex + 1);
+      envVars[key] = value;
+    }
+    sessionOptions.env = envVars;
   }
 
   return sessionOptions;
