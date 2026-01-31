@@ -57,6 +57,7 @@ export interface PromptOptions {
   allowPossession?: boolean;
   apply?: boolean;
   env?: string[];
+  settingSources?: string;
 }
 
 /**
@@ -467,6 +468,18 @@ function buildSessionOptions(options: PromptOptions): SessionOptions {
       envVars[key] = value;
     }
     sessionOptions.env = envVars;
+  }
+
+  // Parse setting sources: --setting-sources user,project,local
+  if (options.settingSources) {
+    const validSources = ["user", "project", "local"];
+    const sources = options.settingSources.split(",").map((s) => s.trim());
+    for (const source of sources) {
+      if (!validSources.includes(source)) {
+        throw new Error(`Invalid setting source: ${source}. Valid: ${validSources.join(", ")}`);
+      }
+    }
+    sessionOptions.settingSources = sources as Array<"user" | "project" | "local">;
   }
 
   return sessionOptions;

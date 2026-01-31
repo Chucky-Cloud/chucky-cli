@@ -104,6 +104,7 @@ program
   .option("--allow-possession", "Enable host tools - Claude can execute commands on your machine")
   .option("--apply", "Auto-apply file changes to local workspace after session completes")
   .option("-e, --env <KEY=VALUE...>", "Environment variables to pass to sandbox (can specify multiple)")
+  .option("--setting-sources <sources>", "Settings to load: user,project,local (comma-separated). Use 'project' for CLAUDE.md")
   .action(promptCommand);
 
 // Jobs command

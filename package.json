@@ -1,6 +1,6 @@
 {
   "name": "@chucky.cloud/cli",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "CLI for deploying AI agent workspaces to Chucky cloud - build and ship Claude-powered assistants",
   "type": "module",
   "bin": {
